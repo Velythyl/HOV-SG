@@ -87,6 +87,7 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=24)
     ap.add_argument("--width", type=int, default=320)
     ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--depth-noise", type=float, default=0.02, help="std-dev in metres")
     args = ap.parse_args()
 
     W, H = args.width, args.height
@@ -98,14 +99,21 @@ def main() -> None:
     (out / "rgb").mkdir(parents=True, exist_ok=True)
     (out / "depth").mkdir(parents=True, exist_ok=True)
 
+    rng = np.random.default_rng(0)
     centers = [np.array([3.0, 2.5, 1.5]), np.array([2.6, 2.2, 1.4])]
     with open(out / "frames.jsonl", "w") as handle:
         for i in range(args.frames):
             yaw = 2 * np.pi * i / (args.frames / len(centers))
             c = centers[i % len(centers)]
-            pitch = -0.35 if i % 3 else -0.15
+            # Look down, level and up: HOV-SG's floor segmentation needs both
+            # the floor and the ceiling in its height histogram.
+            # (irregular in i so every frame stride still sees both).
+            pitch = 0.42 * np.cos(1.3 * i)
             R = _look_rotation(yaw, pitch)
             rgb, depth = _render(K, W, H, R, c)
+            # Sensor-like noise; without it the floor sits exactly on the lowest
+            # histogram bin, where scipy's find_peaks cannot report a peak.
+            depth = depth + rng.normal(0.0, args.depth_noise, depth.shape)
             Image.fromarray(rgb).save(out / "rgb" / f"{i:06d}.jpg", quality=95)
             Image.fromarray(np.round(depth * depth_scale).astype(np.uint16)).save(out / "depth" / f"{i:06d}.png")
             pose = np.eye(4)
