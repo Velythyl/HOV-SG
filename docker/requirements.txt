@@ -1,0 +1,25 @@
+# Upstream environment.yaml pip section (pins kept), minus habitat-sim and
+# transformers/pathos (not imported by the graph build path), plus the packages
+# upstream imports without listing (pandas, scikit-learn, networkx) and faiss-cpu
+# in place of conda's faiss-gpu (only IndexFlatL2 is used, on CPU arrays).
+numpy<2
+matplotlib==3.7.3
+scipy==1.13.1
+open3d==0.18.0
+opencv-python-headless==4.8.1.78
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git@dca509fe793f601edb92606367a655c15ac00fdf
+torchmetrics==1.4.0
+ftfy
+tqdm
+open-clip-torch==2.26.1
+openai==1.3.7
+httpx<0.28
+plyfile
+hydra-core==1.3.2
+pyvista==0.44.1
+scikit-fmm==2024.5.29
+pandas==2.2.2
+scikit-learn==1.5.1
+networkx==3.2.1
+faiss-cpu==1.8.0
+pillow

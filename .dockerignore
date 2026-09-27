@@ -1,0 +1,8 @@
+.git
+.venv
+**/__pycache__
+checkpoints
+data
+outputs
+output_*
+media

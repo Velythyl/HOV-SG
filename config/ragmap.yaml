@@ -1,0 +1,48 @@
+# RAGMAP adapter config: upstream create_graph.yaml plus the adapter's own
+# `ragmap` section. Every upstream key keeps its upstream default unless set
+# below; override any of them on the ragmap-run command line, e.g.
+#   ragmap-run --input /input --output /output pipeline.skip_frames=5
+defaults:
+  - create_graph
+  - _self_
+
+main:
+  # Not one of Graph's built-in datasets: Graph.__init__ loads the models and
+  # then leaves `dataset` to the adapter, which attaches RagmapDataset.
+  dataset: ragmap
+  scene_id: ragmap
+  split: ""
+  device: cuda
+  package_path: /opt/HOV-SG/hovsg/
+  dataset_path: /input    # set from --input
+  save_path: /output/hovsg  # set from --output
+  raw_data_path: ""
+
+models:
+  clip:
+    type: ViT-H-14
+    checkpoint: auto   # auto = <ragmap.weights_dir>/laion2b_s32b_b79k.bin (downloaded on first run)
+  sam:
+    type: vit_h
+    checkpoint: auto   # auto = <ragmap.weights_dir>/sam_<type>_*.pth (downloaded on first run)
+
+ragmap:
+  weights_dir: ${oc.env:HOVSG_WEIGHTS,/weights}
+  # Room labels for HOV-SG's CLIP view-embedding room classification
+  # (Graph.generate_room_names(generate_method="view_embedding")). Default is the
+  # list upstream's application/visualize_query_graph.py uses.
+  room_types: [office, kitchen, bathroom, seminar room, meeting room, dinning room, corridor]
+  # Run upstream Graph.create_nav_graph (Voronoi navigation graph). A failure is
+  # recorded in run.json instead of losing the whole graph.
+  nav_graph: true
+  # Also write upstream's full_feats.pt / mask_feats.pt (N_points x 1024 floats;
+  # can be many GB on a large scene).
+  save_feature_map: false
+  visibility:
+    max_points_per_object: 2000
+    depth_tolerance: 0.05
+    depth_tolerance_rel: 0.05
+    min_points: 10
+    min_fraction: 0.1
+    crop_margin: 0.1
+  seed: 0

@@ -6,4 +6,6 @@ setup(
     description='HOV-SG: Hierarchical Open-Vocabulary 3D Scene Graphs for Language-Grounded Robot Navigation',
     author='See https://hovsg.github.io/',
     packages=find_packages(),
+    # RAGMAP adapter entry point (see README, "RAGMAP adapter").
+    entry_points={"console_scripts": ["ragmap-run=ragmap_adapter.run:main"]},
 )
