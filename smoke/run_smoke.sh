@@ -22,7 +22,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$WORK/scene" "$WORK/output" "$WEIGHTS"
 # Generate the scene inside the image so the host needs no Python deps.
 "$RUNTIME" run --rm -v "$HERE:/smoke:ro" -v "$WORK/scene:/scene" --entrypoint python "$IMAGE" \
-  /smoke/make_synthetic_scene.py --out /scene --up-axis "$UP_AXIS" --frames "${FRAMES:-24}"
+  /smoke/make_synthetic_scene.py --out /scene --up-axis="$UP_AXIS" --frames "${FRAMES:-24}"
 
 if [[ -z "$GPU_ARGS" ]]; then
   PROFILE=(models.sam.type=vit_b models.sam.points_per_side=6 models.sam.points_per_batch=36 pipeline.skip_frames=3)
