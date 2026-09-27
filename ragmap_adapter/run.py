@@ -106,6 +106,9 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     # (hovsg/utils/label_feats.py: "hovsg/labels").
     os.chdir(REPO_ROOT)
 
+    from ragmap_adapter.headless import install as install_headless
+
+    install_headless()
     from hovsg.graph.graph import Graph
 
     from ragmap_adapter.dataset import RagmapDataset

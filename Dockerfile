@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 COPY . ${HOVSG_ROOT}
 RUN uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps -e . \
     && python -c "import torch, open_clip, open3d, segment_anything, faiss, pyvista, skfmm, hydra; \
+import ragmap_adapter.headless as h; h.install(); \
 from hovsg.graph.graph import Graph; from ragmap_adapter.run import main; \
 assert torch.version.cuda == '12.1', torch.version.cuda; print('imports ok')" \
     && ragmap-run --help >/dev/null
