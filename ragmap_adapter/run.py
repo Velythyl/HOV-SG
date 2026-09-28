@@ -115,9 +115,74 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     from ragmap_adapter.export import VisibilityConfig, export
 
     class RagmapGraph(Graph):
-        """Upstream Graph; only the navigation graph failure mode is softened."""
+        """Upstream Graph with three failure modes handled; the algorithm is unchanged.
+
+        A failed navigation graph is recorded instead of losing the whole graph;
+        masks emptied by denoising are dropped instead of crashing; and, only when
+        ``ragmap.single_storey_fallback`` is set, a map with no floor/ceiling
+        peak pair becomes one storey. Each is reported in run.json.
+        """
 
         nav_graph_status = "not run"
+        floor_segmentation = "upstream"
+        empty_masks_dropped = 0
+
+        def segment_objects(self, save_dir=None):
+            # Upstream denoises each mask cloud (DBSCAN, eps=0.05, min_points=10)
+            # and then takes np.min of its points, which raises on a mask the
+            # denoise emptied. Same denoise, done here once, with those masks
+            # dropped from mask_pcds and mask_feats together (they are indexed
+            # in step); upstream's own call is then an identity. A run with no
+            # emptied mask is unchanged.
+            import hovsg.graph.graph as graph_module
+
+            denoise = graph_module.pcd_denoise_dbscan
+            kept = [
+                (cloud, feats)
+                for cloud, feats in (
+                    (denoise(pcd, eps=0.05, min_points=10), feats)
+                    for pcd, feats in zip(self.mask_pcds, self.mask_feats)
+                )
+                if len(cloud.points)
+            ]
+            RagmapGraph.empty_masks_dropped = len(self.mask_pcds) - len(kept)
+            if RagmapGraph.empty_masks_dropped:
+                logger.warning("dropping %d masks emptied by denoising", RagmapGraph.empty_masks_dropped)
+            self.mask_pcds = [cloud for cloud, _ in kept]
+            self.mask_feats = [feats for _, feats in kept]
+            graph_module.pcd_denoise_dbscan = lambda pcd, **_: pcd
+            try:
+                return super().segment_objects(save_dir)
+            finally:
+                graph_module.pcd_denoise_dbscan = denoise
+
+        def segment_floors(self, path, flip_zy=False):
+            try:
+                return super().segment_floors(path, flip_zy=flip_zy)
+            except IndexError:
+                # Only upstream's "no floor/ceiling pair" failure, which leaves
+                # self.floors empty; anything else is re-raised untouched.
+                if self.floors or not cfg.ragmap.single_storey_fallback:
+                    raise
+            import numpy as np
+            import open3d as o3d
+            from hovsg.graph.floor import Floor
+
+            points = np.asarray(self.full_pcd.points)
+            low, high = float(points[:, 1].min()), float(points[:, 1].max())
+            floor_obj = Floor("0", name="floor_0")
+            floor_pcd = self.full_pcd.crop(o3d.geometry.AxisAlignedBoundingBox(
+                min_bound=(-np.inf, low, -np.inf), max_bound=(np.inf, high, np.inf)))
+            floor_obj.vertices = np.asarray(floor_pcd.get_axis_aligned_bounding_box().get_box_points())
+            floor_obj.pcd = floor_pcd
+            floor_obj.floor_zero_level = low
+            floor_obj.floor_height = high - low
+            self.floors.append(floor_obj)
+            RagmapGraph.floor_segmentation = (
+                f"single_storey_fallback: no floor/ceiling peak pair; one storey from {low:.3f} to {high:.3f}"
+            )
+            logger.warning("segment_floors found no floor/ceiling pair; %s", RagmapGraph.floor_segmentation)
+            return [[low, high]]
 
         def create_nav_graph(self):
             if not cfg.ragmap.nav_graph:
@@ -163,6 +228,8 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
         hovsg.build_graph(save_path=save_dir)
     tick("build_graph", t)
     report["nav_graph"] = RagmapGraph.nav_graph_status
+    report["floor_segmentation"] = RagmapGraph.floor_segmentation
+    report["empty_masks_dropped"] = RagmapGraph.empty_masks_dropped
 
     # --- room naming: CLIP view-embedding classification (no LLM) --------------
     t = time.monotonic()
