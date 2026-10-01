@@ -98,6 +98,9 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     report["weights"] = _resolve_checkpoints(cfg)
     report["cpu_shim"] = install_if_no_cuda()
 
+    from ragmap_adapter.checkpoint import install_signal_handlers
+
+    install_signal_handlers()
     seed = int(cfg.ragmap.seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -119,6 +122,19 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
         fast_merge.install()
     report["merge_impl"] = "ragmap_adapter.fast_merge (exact)" if cfg.ragmap.fast_merge else "upstream"
 
+    from ragmap_adapter import checkpoint as ckpt
+
+    # Resumable extraction + sequential merge (see checkpoint.py), enabled by
+    # the environment so that an image without it simply ignores the request.
+    ck = None
+    ck_dir = os.environ.get("HOVSG_CHECKPOINT_DIR", "").strip()
+    if ck_dir and cfg.pipeline.merge_type == "sequential":
+        ck = ckpt.Checkpoint(
+            Path(ck_dir), ckpt.checkpoint_key(cfg, input_dir, report["hovsg_git_sha"]),
+            every_s=float(os.environ.get("HOVSG_CHECKPOINT_EVERY_S", "300") or 300),
+        )
+        report["checkpoint"] = {"dir": ck_dir, "every_s": ck.every_s, "events": ck.events}
+
     from ragmap_adapter.dataset import RagmapDataset
     from ragmap_adapter.export import VisibilityConfig, export
 
@@ -134,6 +150,28 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
         nav_graph_status = "not run"
         floor_segmentation = "upstream"
         empty_masks_dropped = 0
+
+        def create_feature_map(self, save_path=None):
+            if ck is None:
+                return super().create_feature_map(save_path)
+            import hovsg.graph.graph as graph_module
+            import hovsg.utils.graph_utils as gu
+            from tqdm import tqdm
+
+            seq_merge = ckpt.resumable_seq_merge(ck, lambda *a, **k: gu.merge_3d_masks(*a, **k), tqdm)
+            if ck.has_extraction():
+                return ckpt.resume_feature_map(self, ck, seq_merge)
+
+            def save_then_merge(frames_pcd, *args):
+                ck.save_extraction(self, frames_pcd)
+                return seq_merge(frames_pcd, *args)
+
+            original = graph_module.seq_merge
+            graph_module.seq_merge = save_then_merge
+            try:
+                return super().create_feature_map(save_path)
+            finally:
+                graph_module.seq_merge = original
 
         def segment_objects(self, save_dir=None):
             # Upstream denoises each mask cloud (DBSCAN, eps=0.05, min_points=10)
@@ -290,9 +328,18 @@ def main(argv=None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     input_dir, output_dir = args.input.resolve(), args.output.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    from ragmap_adapter.checkpoint import Interrupted
+
     try:
         report = run(input_dir, output_dir, args.overrides)
         code = 0
+    except Interrupted as exc:
+        # SIGTERM / SIGUSR1 (the allocation's end): the checkpoint, if enabled,
+        # has been flushed; exit like a process killed by SIGTERM.
+        logger.warning("HOV-SG run interrupted by %s", exc)
+        report = {"status": "interrupted", "error": str(exc), "input": str(input_dir), "output": str(output_dir),
+                  "overrides": args.overrides}
+        code = 143
     except Exception as exc:
         logger.error("HOV-SG run failed\n%s", traceback.format_exc())
         report = {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc(),
