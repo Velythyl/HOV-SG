@@ -222,6 +222,15 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     hovsg.save_full_pcd(path=save_dir)
     if cfg.ragmap.save_feature_map:
         hovsg.save_full_pcd_feats(path=save_dir)
+    elif cfg.ragmap.save_mask_feats:
+        # The mask half of upstream's save_full_pcd_feats, verbatim (graph.py
+        # 1261-1265): the per-mask features aligned with objects/pcd_<i>.ply, as
+        # OpenLex3D's hovsg_to_openlex_format.py reads them, without the
+        # N_points x 1024 full_feats.pt. Upstream's in-place np.array conversion
+        # is kept, so build_graph sees what it sees upstream.
+        if len(hovsg.mask_feats) != 0:
+            hovsg.mask_feats = np.array(hovsg.mask_feats)
+            torch.save(torch.from_numpy(hovsg.mask_feats), os.path.join(save_dir, "mask_feats.pt"))
     tick("save_feature_map", t)
     t = time.monotonic()
     if cfg.pipeline.create_graph:

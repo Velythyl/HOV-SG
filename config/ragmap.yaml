@@ -44,6 +44,10 @@ ragmap:
   # Also write upstream's full_feats.pt / mask_feats.pt (N_points x 1024 floats;
   # can be many GB on a large scene).
   save_feature_map: false
+  # Write only upstream's mask_feats.pt (n_masks x 1024, aligned with
+  # objects/pcd_<i>.ply): what OpenLex3D's HOV-SG exporter reads. Ignored when
+  # save_feature_map is true, which writes it anyway.
+  save_mask_feats: false
   visibility:
     max_points_per_object: 2000
     depth_tolerance: 0.05
