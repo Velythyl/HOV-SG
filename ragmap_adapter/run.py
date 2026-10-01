@@ -111,6 +111,14 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     install_headless()
     from hovsg.graph.graph import Graph
 
+    if cfg.ragmap.fast_merge:
+        # Exact replacement of the merge's two hot spots (see fast_merge.py);
+        # the merged masks are byte-identical to upstream's.
+        from ragmap_adapter import fast_merge
+
+        fast_merge.install()
+    report["merge_impl"] = "ragmap_adapter.fast_merge (exact)" if cfg.ragmap.fast_merge else "upstream"
+
     from ragmap_adapter.dataset import RagmapDataset
     from ragmap_adapter.export import VisibilityConfig, export
 
@@ -239,6 +247,8 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     report["nav_graph"] = RagmapGraph.nav_graph_status
     report["floor_segmentation"] = RagmapGraph.floor_segmentation
     report["empty_masks_dropped"] = RagmapGraph.empty_masks_dropped
+    if cfg.ragmap.fast_merge:
+        report["fast_merge_stats"] = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in fast_merge.STATS.items()}
 
     # --- room naming: CLIP view-embedding classification (no LLM) --------------
     t = time.monotonic()

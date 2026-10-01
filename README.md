@@ -33,6 +33,7 @@ runs as an `object_mapping` stage. Only adapters were added; nothing under
 | `ragmap_adapter/run.py` | `ragmap-run` entry point: runs the steps of `application/create_graph.py` (Hydra-composed config), CLIP room naming, export |
 | `ragmap_adapter/export.py` | Writes `objects.jsonl` etc. in the input world frame |
 | `ragmap_adapter/weights.py` | Download-on-first-run of the checkpoints into the mounted weights dir |
+| `ragmap_adapter/fast_merge.py`, `ragmap_adapter/exact_dbscan.py` | **Exact** replacement of the sequential merge's two hot spots (per-mask DBSCAN denoise, brute-force faiss overlap); the merged masks are byte-identical to upstream's. On by default (`ragmap.fast_merge`); Replica office0 at stride 10 goes from ~11 h to ~1.5 h. `ragmap.fast_merge=false` runs upstream's own functions |
 | `ragmap_adapter/cpu_shim.py` | Redirects upstream's hard-coded `.cuda()` to CPU **only when no GPU is visible** (CI smoke) |
 | `config/ragmap.yaml` | `create_graph.yaml` + a `ragmap:` section; every upstream key keeps its upstream default |
 | `Dockerfile`, `docker/requirements.txt` | CUDA 12.1 / PyTorch 2.3.1 / Python 3.9 image, **without habitat-sim** (only needed to re-render HM3DSem walks) |

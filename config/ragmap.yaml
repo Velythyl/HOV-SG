@@ -48,6 +48,12 @@ ragmap:
   # objects/pcd_<i>.ply): what OpenLex3D's HOV-SG exporter reads. Ignored when
   # save_feature_map is true, which writes it anyway.
   save_mask_feats: false
+  # Run the sequential merge through ragmap_adapter.fast_merge: upstream's
+  # merge_3d_masks with its two hot spots (the per-mask DBSCAN denoise and the
+  # brute-force faiss overlap) replaced by exact equivalents. The merged masks,
+  # and so everything after them, are byte-identical to upstream's; false runs
+  # upstream's own functions (hours per scene: upstream issue #16).
+  fast_merge: true
   visibility:
     max_points_per_object: 2000
     depth_tolerance: 0.05
