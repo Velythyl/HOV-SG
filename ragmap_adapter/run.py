@@ -183,10 +183,17 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
             import hovsg.graph.graph as graph_module
 
             denoise = graph_module.pcd_denoise_dbscan
+            # With `ragmap.fast_merge`, the same denoise is computed by
+            # exact_dbscan.py (same result, without Open3D's all-neighbour
+            # lists: on Replica office3 at stride 10, Open3D's needs > 60 GB
+            # here, on merged masks of millions of points).
+            first_pass = denoise
+            if cfg.ragmap.fast_merge:
+                from ragmap_adapter.exact_dbscan import denoise_dbscan as first_pass
             kept = [
                 (cloud, feats)
                 for cloud, feats in (
-                    (denoise(pcd, eps=0.05, min_points=10), feats)
+                    (first_pass(pcd, eps=0.05, min_points=10), feats)
                     for pcd, feats in zip(self.mask_pcds, self.mask_feats)
                 )
                 if len(cloud.points)
