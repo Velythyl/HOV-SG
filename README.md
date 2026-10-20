@@ -24,8 +24,9 @@ This repository is the official implementation of the paper:
 
 This fork ([Velythyl/HOV-SG](https://github.com/Velythyl/HOV-SG)) packages the
 **original, unmodified HOV-SG graph construction** as a container that RAGMAP
-runs as an `object_mapping` stage. Only adapters were added; nothing under
-`hovsg/` or `application/` was changed:
+runs as an `object_mapping` stage. Only adapters were added, plus the
+encoder-service hook described in [Encoder service](#encoder-service-modelscliptypehttp),
+which leaves the default (OpenCLIP ViT-H-14) path's output unchanged:
 
 | Path | What it is |
 |---|---|
@@ -97,7 +98,7 @@ coordinate is mapped back with `A^T`. The upstream-format graph in
   * `room`: HOV-SG room name from `Graph.generate_room_names(generate_method="view_embedding")`, which votes with CLIP over `ragmap.room_types`. The default list is upstream's `visualize_query_graph.py` list.
   * `pointcloud`: `objects/<id>.ply`, with observed colours restored. Upstream's `save_masked_pcds` paints each mask a random colour.
   * `frame_indices` and `crop` come from reprojecting the object points into every input frame with a depth-consistency test. The crop is taken from the frame with the most visible points.
-  * `extra` holds `hovsg_room_id`, `num_points`, `best_frame_index`, `clip_feature_row` (a row of `object_clip_feats.npy`, HOV-SG's 1024-d object embedding) and `label_vocabulary`.
+  * `extra` holds `hovsg_room_id`, `num_points`, `best_frame_index`, `clip_feature_row` (a row of `object_clip_feats.npy`, HOV-SG's object embedding: 1024-d with the default OpenCLIP ViT-H-14, the service's dimension with `models.clip.type=http`) and `label_vocabulary`.
 * `run.json`: status, the resolved config, counts (floors/rooms/objects), per-phase timings, frame counts, the up-axis matrix and the navigation-graph status. On failure it holds `status: failed` with the traceback, and the exit code is 1.
 * `rooms.jsonl`, `floors.jsonl`, `object_clip_feats.npy`: extras. `hovsg/`: upstream's native output (`graph/`, `full_pcd.ply`, `masked_pcd.ply`, ...).
 
@@ -106,6 +107,45 @@ Adapter knobs live under `ragmap.*` in `config/ragmap.yaml`:
 * `save_feature_map`: also writes upstream's `full_feats.pt`, which is N_points x 1024 floats and can be many GB.
 * `visibility.*`: the `frame_indices` and crop thresholds.
 * `room_types`, `seed`.
+
+### Encoder service (`models.clip.type=http`)
+
+For RAGMAP's encoder-scaling sweep, every CLIP call can go to RAGMAP's
+`ragmap-encoder-service` instead of the in-process OpenCLIP model:
+
+```bash
+podman run --rm --network host --device nvidia.com/gpu=all ... \
+  -e RAGMAP_ENCODER_BASE_URL=http://127.0.0.1:8790 \
+  ghcr.io/velythyl/hovsg:<tag> --input /input --output /output \
+  models.clip.type=http +models.clip.profile=qwen3vl_emb_8b
+```
+
+* `hovsg/utils/encoder_http.py` is a stdlib client for the service's wire format
+  (`/healthz`, `/v1/embed/images`, `/v1/embed/texts`; base64 PNG in, base64
+  float32 `(n, D)` out). It checks every answer against the profile, revision and
+  dimension the service reported at start-up and raises on any error (507 = GPU
+  OOM in the service). Nothing is ever replaced by zeros.
+* HOV-SG's method logic is unchanged: the same full frames, masked and unmasked
+  512x512 mask crops and room views are embedded, with the same 0.4418/0.5584
+  fusion, text templates, DBSCAN `eps` and thresholds. The service applies the
+  encoder's own preprocessing in place of OpenCLIP's eval transform.
+* The dimension is the service's (`CLIP_DIM` is not used).
+* Label features (`pipeline.obj_labels`, default `HM3DSEM_LABELS`) are computed with
+  the service's text tower and cached under
+  `<ragmap.weights_dir>/label_feats/<profile>/<revision>/` (keyed by the class
+  list's hash). The ViT-H `.npy` files shipped in `hovsg/labels` are never read
+  in this mode.
+* No CLIP checkpoint is needed. `run.json` records the encoder identity under
+  `encoder`. The profile and revision are part of the checkpoint key.
+* `+models.clip.point_feats_dtype=float16` (this mode only) stores the N x D
+  per-point features in float16, for large D on large scenes. The per-mask
+  features are computed from them in float32.
+* The per-frame point fusion runs one block of 256 feature columns at a time
+  in this mode, so its transient is independent of D.
+
+Output-preserving memory fixes on both paths: the per-pixel feature
+normalisation runs in place and goes to the host in row blocks, the per-point
+mean divides in place, and the unused per-frame `frames_feats` list is gone.
 
 ### Hosted models
 

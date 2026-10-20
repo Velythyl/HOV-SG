@@ -133,7 +133,16 @@ def extract_feats_per_pixel(
     for i, mask in enumerate(masks):
         non_zero_indices = torch.argwhere(non_zero_ids[i] == 1).cuda()
         outfeat[non_zero_indices, :] += F_p[i, :]
-    outfeat = torch.nn.functional.normalize(outfeat, p=2, dim=-1)
-    outfeat = outfeat.half()
-    outfeat = outfeat.reshape((LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, clip_feat_dim))
-    return outfeat.cpu(), F_p.cpu(), masks, F_g
+    # Same values as upstream's `normalize(outfeat).half().cpu()`, without its two
+    # extra full-size GPU copies (H*W x D float32 for the quotient, float16 for
+    # the cast; 13 GB + 7 GB at D=4096 on a 1200x680 frame): the division by
+    # normalize's own denominator, norm(...).clamp_min(1e-12), runs in place,
+    # and the cast and the copy to the host go one block of rows at a time.
+    outfeat.div_(outfeat.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12))
+    outfeat_cpu = torch.empty((LOAD_IMG_HEIGHT * LOAD_IMG_WIDTH, clip_feat_dim), dtype=torch.float16)
+    rows = 1 << 16
+    for start in range(0, outfeat.shape[0], rows):
+        outfeat_cpu[start:start + rows] = outfeat[start:start + rows].half().cpu()
+    del outfeat
+    outfeat_cpu = outfeat_cpu.reshape((LOAD_IMG_HEIGHT, LOAD_IMG_WIDTH, clip_feat_dim))
+    return outfeat_cpu, F_p.cpu(), masks, F_g

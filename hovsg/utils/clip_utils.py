@@ -12,6 +12,8 @@ from sklearn.manifold import TSNE
 import torch
 from tqdm import tqdm
 
+from hovsg.utils.encoder_http import is_http
+
 
 # Compute the coordinates of the image on the plot
 def compute_plot_coordinates(image, x, y, image_centers_area_size, offset):
@@ -70,6 +72,9 @@ def get_img_feats(img, preprocess, clip_model):
     :param clip_model (CLIP): the CLIP model
     :return: the image features
     """
+    if is_http(clip_model):
+        # models.clip.type=http: the encoder service applies its own preprocessing.
+        return clip_model.embed_images([np.uint8(img)])
     img_pil = Image.fromarray(np.uint8(img))
     img_in = preprocess(img_pil)[None, ...]
     with torch.no_grad():
@@ -87,6 +92,8 @@ def get_img_feats_batch(imgs, preprocess, clip_model):
     :param clip_model (CLIP): the CLIP model
     :return: the image features
     """
+    if is_http(clip_model):
+        return clip_model.embed_images([np.uint8(img) for img in imgs])
     imgs_pil = [Image.fromarray(np.uint8(img)) for img in imgs]
     imgs_in = torch.stack([preprocess(img_pil) for img_pil in imgs_pil])
     with torch.no_grad():
@@ -150,6 +157,9 @@ def get_text_feats(in_text, clip_model, clip_feat_dim, batch_size=64):
     :return: the text features
     """
     # in_text = ["a {} in the scene.".format(in_text)]
+    if is_http(clip_model):
+        # The service applies the encoder's own tokenizer (and instruction, if any).
+        return clip_model.embed_texts(list(in_text))
     text_tokens = open_clip.tokenize(in_text).cuda()
     text_id = 0
     text_feats = np.zeros((len(in_text), clip_feat_dim), dtype=np.float32)

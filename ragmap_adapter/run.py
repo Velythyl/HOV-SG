@@ -46,16 +46,58 @@ def _resolve_checkpoints(cfg) -> dict:
     from ragmap_adapter.weights import CLIP_FILES, SAM_FILES, ensure_checkpoint
 
     weights = Path(cfg.ragmap.weights_dir)
-    if cfg.models.clip.checkpoint == "auto":
+    http = cfg.models.clip.type == "http"
+    if http:
+        # The encoder service holds the CLIP-like model; only SAM's checkpoint is local.
+        cfg.models.clip.checkpoint = None
+    elif cfg.models.clip.checkpoint == "auto":
         if cfg.models.clip.type not in CLIP_FILES:
             raise ValueError(f"no default checkpoint for CLIP type {cfg.models.clip.type}; set models.clip.checkpoint")
         cfg.models.clip.checkpoint = str(weights / CLIP_FILES[cfg.models.clip.type])
     if cfg.models.sam.checkpoint == "auto":
         cfg.models.sam.checkpoint = str(weights / SAM_FILES[cfg.models.sam.type])
     started = time.monotonic()
-    ensure_checkpoint(cfg.models.clip.checkpoint)
+    if not http:
+        ensure_checkpoint(cfg.models.clip.checkpoint)
     ensure_checkpoint(cfg.models.sam.checkpoint)
     return {"clip": cfg.models.clip.checkpoint, "sam": cfg.models.sam.checkpoint, "ensure_seconds": time.monotonic() - started}
+
+
+def _resolve_encoder(cfg) -> dict | None:
+    """``models.clip.type=http``: check the encoder service and pin its identity in ``cfg``.
+
+    The service URL comes from ``RAGMAP_ENCODER_BASE_URL`` (or ``models.clip.url``)
+    and stays out of the config, so a resumed run against a service on another
+    port keeps its checkpoint; the profile and revision go into
+    ``cfg.models.clip`` and so into the checkpoint key (``checkpoint_key``).
+    """
+    clip = cfg.models.clip
+    dtype = clip.get("point_feats_dtype", "float32")
+    if dtype not in ("float32", "float16"):
+        raise ValueError(f"models.clip.point_feats_dtype must be float32 or float16, got {dtype!r}")
+    if clip.type != "http":
+        if dtype != "float32":
+            raise ValueError("models.clip.point_feats_dtype=float16 is only supported with models.clip.type=http")
+        return None
+    from hovsg.utils.encoder_http import HttpEncoder
+
+    if not clip.get("profile"):
+        raise ValueError("models.clip.type=http needs +models.clip.profile=<encoder profile id>")
+    url = str(clip.get("url") or os.environ.get("RAGMAP_ENCODER_BASE_URL", ""))
+    encoder = HttpEncoder(base_url=url, profile=clip.profile, revision=clip.get("revision") or None)
+    clip.revision = encoder.revision
+    if not clip.get("label_cache_dir"):
+        clip.label_cache_dir = str(Path(cfg.ragmap.weights_dir) / "label_feats")
+    return {
+        "type": "http",
+        "url": encoder.base_url,
+        "profile": encoder.profile,
+        "model": encoder.identity.get("model"),
+        "revision": encoder.revision,
+        "dim": encoder.dim,
+        "point_feats_dtype": dtype,
+        "label_feats": f"computed with the service's text tower, cached under {clip.label_cache_dir}",
+    }
 
 
 def _git_sha() -> str | None:
@@ -96,6 +138,9 @@ def run(input_dir: Path, output_dir: Path, overrides: list[str]) -> dict:
     cfg = _compose(input_dir, output_dir, overrides)
     OmegaConf.set_struct(cfg, False)
     report["weights"] = _resolve_checkpoints(cfg)
+    encoder = _resolve_encoder(cfg)
+    if encoder is not None:  # builtin runs keep upstream's open_clip and their run.json as before
+        report["encoder"] = encoder
     report["cpu_shim"] = install_if_no_cuda()
 
     from ragmap_adapter.checkpoint import install_signal_handlers

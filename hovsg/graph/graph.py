@@ -39,6 +39,7 @@ from hovsg.dataloader.scannet import ScannetDataset
 from hovsg.dataloader.replica import ReplicaDataset
 
 from hovsg.utils.clip_utils import get_img_feats, get_text_feats_multiple_templates
+from hovsg.utils.encoder_http import HttpEncoder, is_http
 from hovsg.models.sam_clip_feats_extractor import extract_feats_per_pixel
 from hovsg.utils.graph_utils import (
     seq_merge,
@@ -61,6 +62,21 @@ from hovsg.utils.llm_utils import (
 )
 
 # pylint: disable=all
+
+
+def fuse_point_feats_by_columns(sum_features, idx, frame_feats, block=256):
+    """``sum_features[idx] += frame_feats``, one block of feature columns at a time.
+
+    Used with the encoder service only. Columns are independent, so each block
+    is upstream's statement on a column slice (a pixel whose nearest point is
+    shared keeps upstream's assignment semantics); the transient gather/add
+    arrays are n_pixels x block instead of n_pixels x D (about 10 GB per frame
+    at D=4096 on a 1200x680 Replica frame).
+    """
+    idx = torch.as_tensor(idx)
+    for start in range(0, sum_features.shape[1], block):
+        view = sum_features[:, start:start + block]
+        view[idx] += frame_feats[:, start:start + block]
 
 
 class Graph:
@@ -102,6 +118,18 @@ class Graph:
                 device=self.device,
             )
             self.clip_feat_dim = CLIP_DIM["ViT-H-14"]
+        elif self.cfg.models.clip.type == "http":
+            # RAGMAP's encoder service (hovsg/utils/encoder_http.py): any visual-text
+            # encoder, preprocessed by the service; the dimension is the service's.
+            clip_cfg = self.cfg.models.clip
+            self.clip_model = HttpEncoder(
+                base_url=str(clip_cfg.get("url") or os.environ.get("RAGMAP_ENCODER_BASE_URL", "")),
+                profile=clip_cfg.get("profile") or None,
+                revision=clip_cfg.get("revision") or None,
+                label_cache_dir=clip_cfg.get("label_cache_dir") or None,
+            )
+            self.preprocess = None
+            self.clip_feat_dim = self.clip_model.dim
         self.clip_model.eval()
         if not hasattr(self.cfg, "pipeline"):
             print("-- entering querying and evaluation mode")
@@ -165,11 +193,16 @@ class Graph:
         tree_pcd = cKDTree(locs_in)
         n_points = locs_in.shape[0]
         counter = torch.zeros((n_points, 1), device="cpu")
-        sum_features = torch.zeros((n_points, self.clip_feat_dim), device="cpu")
+        # Per-point features are float32 as upstream; with the encoder service only,
+        # `models.clip.point_feats_dtype=float16` halves them (N x D, for large D).
+        point_feats_dtype = torch.float32
+        if is_http(self.clip_model) and self.cfg.models.clip.get("point_feats_dtype", "float32") == "float16":
+            point_feats_dtype = torch.float16
+        sum_features = torch.zeros((n_points, self.clip_feat_dim), device="cpu", dtype=point_feats_dtype)
 
         # extract features for each frame
         frames_pcd = []
-        frames_feats = []
+        # (upstream also kept every frame's mask features in `frames_feats`, never read)
         for i in tqdm(range(0, len(self.dataset), self.cfg.pipeline.skip_frames), desc="Extracting features"):
             rgb_image, depth_image, pose, _, _ = self.dataset[i]
             if rgb_image.size != depth_image.size:
@@ -195,18 +228,23 @@ class Graph:
                 filter_distance=self.cfg.pipeline.max_mask_distance,
             )
             frames_pcd.append(masks_3d)
-            frames_feats.append(F_masks)
             # fuse features for each point in the full pcd
             mask = np.array(depth_image) > 0
             mask = torch.from_numpy(mask)
             F_2D = F_2D[mask]
             # using cKdtree to find the closest point in the full pcd for each point in frame pcd
             dis, idx = tree_pcd.query(np.asarray(pcd.points), k=1, workers=-1)
-            sum_features[idx] += F_2D
+            if is_http(self.clip_model):
+                fuse_point_feats_by_columns(sum_features, idx, F_2D)
+            else:
+                sum_features[idx] += F_2D
             counter[idx] += 1
+            del F_2D
         # compute the average features
         counter[counter == 0] = 1e-5
-        sum_features = sum_features / counter
+        # in place: the same quotient as upstream's `sum_features / counter`,
+        # without a second N x D array
+        sum_features /= counter
         self.full_feats_array = sum_features.cpu().numpy()
         self.full_feats_array: np.ndarray
         
@@ -245,6 +283,8 @@ class Graph:
             points = np.asarray(mask_3d.points)
             dist, idx = tree_pcd.query(points, k=1, workers=-1)
             feats = self.full_feats_array[idx]
+            if feats.dtype != np.float32:  # float16 per-point storage (encoder service only)
+                feats = feats.astype(np.float32)
             feats = np.nan_to_num(feats)
             # filter feats with dbscan
             if feats.shape[0] == 0:

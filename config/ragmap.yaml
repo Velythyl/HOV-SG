@@ -22,6 +22,12 @@ models:
   clip:
     type: ViT-H-14
     checkpoint: auto   # auto = <ragmap.weights_dir>/laion2b_s32b_b79k.bin (downloaded on first run)
+    # models.clip.type=http +models.clip.profile=<id> runs every CLIP call through
+    # RAGMAP's encoder service at $RAGMAP_ENCODER_BASE_URL instead (any encoder;
+    # its own preprocessing; label features from its text tower, cached under
+    # <ragmap.weights_dir>/label_feats/<profile>/<revision>; no CLIP checkpoint).
+    # With it only, +models.clip.point_feats_dtype=float16 stores the N x D
+    # per-point features in float16 (large D on large scenes). See README.
   sam:
     type: vit_h
     checkpoint: auto   # auto = <ragmap.weights_dir>/sam_<type>_*.pth (downloaded on first run)

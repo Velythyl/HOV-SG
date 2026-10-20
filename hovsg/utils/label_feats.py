@@ -6,12 +6,41 @@ import pandas as pd
 
 from hovsg.utils.constants import COCO_STUFF_CLASSES, MATTERPORT_LABELS_160, MATTERPORT_LABELS_40, MATTERPORT_GT_LABELS, OPENVOCAB_MATTERPORT_LABELS
 from hovsg.utils.clip_utils import get_text_feats_multiple_templates
+from hovsg.utils.encoder_http import is_http
+
+
+def _http_label_feats(clip_model, classes, file_name):
+    """Label features from the encoder service's own text tower.
+
+    The ``.npy`` files shipped in ``hovsg/labels`` are OpenCLIP ViT-H-14 features
+    and would silently mislabel every object under any other encoder (even
+    another 1024-d one), so they are never read here. The features are computed
+    with upstream's templates (``get_text_feats_multiple_templates``) and cached
+    per encoder profile, revision and class list (``HttpEncoder.label_feats_path``).
+    """
+    path = clip_model.label_feats_path(file_name, classes)
+    if path is not None and path.is_file():
+        text_feats = np.load(path)
+        if text_feats.shape == (len(classes), clip_model.dim):
+            return text_feats, classes
+    text_feats = get_text_feats_multiple_templates(classes, clip_model, clip_model.dim)
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.stem}.tmp-{os.getpid()}.npy")
+            np.save(tmp, text_feats)
+            os.replace(tmp, path)
+        except OSError as exc:  # a read-only cache only costs a recompute next time
+            print(f"label feature cache {path} not written: {exc}")
+    return text_feats, classes
 
 
 def compute_label_feats(clip_model, clip_feat_dim, label_feat_path, classes, pre_computed_feats_path="text_feats.npy"):
     """
     Either load precomputed label features or run clip to obtain those
     """
+    if is_http(clip_model):
+        return _http_label_feats(clip_model, classes, pre_computed_feats_path)
     # check if the text features are pre-computed
     if os.path.exists(os.path.join(label_feat_path, pre_computed_feats_path)):
         if ".npy" in pre_computed_feats_path:

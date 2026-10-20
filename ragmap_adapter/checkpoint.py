@@ -327,6 +327,8 @@ def resume_feature_map(graph, ck: Checkpoint, seq_merge) -> None:
         points = np.asarray(mask_3d.points)
         dist, idx = tree_pcd.query(points, k=1, workers=-1)
         feats = graph.full_feats_array[idx]
+        if feats.dtype != np.float32:  # float16 per-point storage (encoder service only)
+            feats = feats.astype(np.float32)
         feats = np.nan_to_num(feats)
         # filter feats with dbscan
         if feats.shape[0] == 0:
